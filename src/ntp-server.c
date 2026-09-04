@@ -16,6 +16,18 @@ WiFiUDP ntpUDP;
 const unsigned int NTP_PORT = 123;
 byte packetBuffer[48];
 
+const byte LI_VN_MODE = 0b00100100; 
+const byte STRATUM    = 2;          
+const byte POLL       = 6;         
+const byte PRECISION  = 0xEC;       
+
+byte referenceId[4] = {0, 0, 0, 0};
+
+#define DEMO_FAKE_TIME true
+const uint32_t FAKE_UNIX_TIME = 1893456000UL; // 1 enero 2030 
+
+void writeTimestamp(int startIndex, uint32_t seconds); 
+
 void setup(){
     Serial.begin(115200);
     Serial.println();
@@ -47,11 +59,23 @@ void setup(){
     Serial.println();
     Serial.println(buffer);
 
+    IPAddress sourceIP;
+    if (WiFi.hostByName(ntpServer, sourceIP)) {
+      referenceId[0] = sourceIP[0];
+      referenceId[1] = sourceIP[1];
+      referenceId[2] = sourceIP[2];
+      referenceId[3] = sourceIP[3];
+    }
+
     WiFi.softAP("Server Test");
     WiFi.softAPConfig(local_IP, gateway, subnet);
 
     ntpUDP.begin(NTP_PORT);
     Serial.println("Servidor NTP escuchando en puerto 123");
+
+    if (DEMO_FAKE_TIME) {
+      Serial.println("*** MODO DEMO ACTIVO: sirviendo hora falsa a los clientes ***");
+    }
 }
 
 void loop(){
@@ -61,29 +85,36 @@ void loop(){
 
         ntpUDP.read(packetBuffer, 48);
 
-        byte clientTransmitTime[0];
+        byte clientTransmitTime[8];
         memcpy(clientTransmitTime, packetBuffer + 40, 8);
+
+        time_t recvTime;
+        time(&recvTime);
+        uint32_t ntpRecvTime = DEMO_FAKE_TIME
+            ? (FAKE_UNIX_TIME + NTP_UNIX_EPOCH_DIFF)
+            : ((uint32_t)recvTime + NTP_UNIX_EPOCH_DIFF);
 
         memset(packetBuffer, 0, 48);
 
-        packetBuffer[0] = 0b00100100;
+        packetBuffer[0] = LI_VN_MODE;
+        packetBuffer[1] = STRATUM;
+        packetBuffer[2] = POLL;
+        packetBuffer[3] = PRECISION;
 
-        packetBuffer[1] = 1;   
-        packetBuffer[2] = 6;   
-        packetBuffer[3] = 0xEC; 
+        memcpy(packetBuffer + 12, referenceId, 4);
 
-        time_t now;
-        time(&now);
-
-        uint32_t ntpTime = (uint32_t)now + NTP_UNIX_EPOCH_DIFF;
-
-        writeTimestamp(16, ntpTime);
+        writeTimestamp(16, ntpRecvTime);
 
         memcpy(packetBuffer + 24, clientTransmitTime, 8);
 
-        writeTimestamp(32, ntpTime);
+        writeTimestamp(32, ntpRecvTime);
 
-        writeTimestamp(40, ntpTime);
+        time_t sendTime;
+        time(&sendTime);
+        uint32_t ntpSendTime = DEMO_FAKE_TIME
+            ? (FAKE_UNIX_TIME + NTP_UNIX_EPOCH_DIFF)
+            : ((uint32_t)sendTime + NTP_UNIX_EPOCH_DIFF);
+        writeTimestamp(40, ntpSendTime);
 
         ntpUDP.beginPacket(ntpUDP.remoteIP(), ntpUDP.remotePort());
         ntpUDP.write(packetBuffer, 48);
@@ -94,7 +125,6 @@ void loop(){
 
     delay(10);
 }
-
 
 void writeTimestamp(int startIndex, uint32_t seconds) {
     packetBuffer[startIndex]     = (seconds >> 24) & 0xFF;
